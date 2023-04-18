@@ -1,0 +1,19 @@
+{
+  "name": "master",
+  "version": "1.0.0",
+  "description": "Git 테스트 겸 Node 스터디 Repository 입니다.",
+  "main": "test.js",
+  "dependencies": {
+    "body-parser": "^1.19.0",
+    "bootstrap": "^4.5.2",
+    "express": "^4.17.1",
+    "mysql": "^2.18.1",
+    "mysql2": "^2.1.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC"
+}
