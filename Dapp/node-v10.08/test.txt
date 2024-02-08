@@ -1,0 +1,375 @@
+'use strict';
+
+const express = require('express');
+const template = require('./template');
+const template_service = require('./template_service');
+const bodyParser = require('body-parser');
+const mysql = require('mysql2/promise');
+const cookieParser = require('cookie-parser');
+let fs = require('fs');
+const { FileSystemWallet, Gateway } = require('fabric-network');
+const path = require('path');
+const { HTML } = require('./template');
+
+const ccpPath = path.resolve(__dirname, '..', '..', 'basic-network', 'connection.json');
+const ccpJSON = fs.readFileSync(ccpPath, 'utf8');
+const ccp = JSON.parse(ccpJSON);
+
+let app = express();
+app.use(bodyParser.urlencoded({extended:true}))
+app.use(bodyParser.json())
+app.use(cookieParser());
+
+
+// MySQL DB 연결
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'nodejs',
+  password: '1234',
+  database: 'my_db',
+});
+
+// Hyperledger Fabric 원장 연결
+async function queryB(func, name, data1, data2, data3, num) {
+    try {
+
+        // 지갑에서 신원 선택
+        const walletPath = path.join(process.cwd(), 'wallet');
+        const wallet = new FileSystemWallet(walletPath);
+        console.log(`Wallet path: ${walletPath}`);
+
+        // 등록된 사용자인지 확인
+        const userExists = await wallet.exists('user1');
+        if (!userExists) {
+            console.log('An identity for the user "user1" does not exist in the wallet');
+            console.log('Run the registerUser.js application before retrying');
+            return;
+        }
+
+        // 게이트웨이에 연결
+        const gateway = new Gateway();
+        await gateway.connect(ccp, { wallet, identity: 'user1', discovery: { enabled: false } });
+
+        // 네트워크에 접속
+        const network = await gateway.getNetwork('mychannel');
+
+
+        let result = null;
+        if (func == 'updatePrint'){
+          // 스마트 컨트랙트 요청
+          const contract = network.getContract('printercc');
+          // 트랜잭션 Submit
+          console.log("updatePrint 실행..");
+          result = await contract.submitTransaction(func, name);
+        }
+        else if (func == 'enrollPrint'){
+          const contract = network.getContract('printercc');
+          // 트랜잭션 Submit
+          console.log("enrollPrint 실행..");
+          result = await contract.submitTransaction(func, name, data1);
+        }
+        else if (func == 'getService'){
+          console.log("getService 실행..");
+          const contract = network.getContract('servicecc2');
+          // 트랜잭션 Submit
+          result = await contract.evaluateTransaction(func, name);
+        }
+        else if (func == 'putService'){
+          console.log("putService 실행..");
+          const contract = network.getContract('servicecc2');
+          // 트랜잭션 Submit
+          result = await contract.submitTransaction('putService', name, data1, data2, data3, num);
+        }
+        else if (func == 'checkPlus'){
+          const contract = network.getContract('checkcc1');
+          // 트랜잭션 Submit
+          result = await contract.submitTransaction(func);
+        }
+        else if (func == 'check'){
+          const contract = network.getContract('checkcc1');
+          // 트랜잭션 Submit
+          result = await contract.evaluateTransaction(func);
+        }
+
+        //const result = await contract.evaluateTransaction('query','dori');
+
+        // 프로세스 응답
+        console.log(`Transaction has been evaluated, result is: ${result.toString()}`);
+        return result;
+
+    } catch (error) {
+        console.error(`Failed to evaluate transaction: ${error}`);
+        process.exit(1);
+    }
+};
+
+// express 시작
+//
+// main UI 복합기 조회
+//
+app.get('/', async function(request, response) {
+  let user, list = ``;
+  let admin = false;
+    
+  const connection = await pool.getConnection(async conn => conn);
+  let objQ = null;
+  // objQ = await connection.query("SELECT `pid` FROM `plist` where `uid`='dori'") // 테스트용 코드
+  // SQL 커넥션을 통해 쿼리문 발행
+
+  if (request.cookies.loginid !== undefined) { // 선언되지 않은 오브젝트를 에러 발생시키지 않으면서 호출하여 비교하는 법 (차이는 모르겠음)
+    user = request.cookies.loginid;
+    admin = request.cookies.admin;
+    console.log("로그인 쿠키 : " + user);
+    console.log("관리자 여부 : " + admin);
+    if (admin == "true"){
+      objQ = await connection.query("SELECT `pid`, `pip`, `uid` FROM `plist`");
+
+      try {
+        console.log(objQ);
+        for (let i = 0; i < objQ[0].length; i++) {
+          console.log(objQ[0][i].pid);
+          if (objQ[0][i].uid != null) {
+            let queryjson = await queryB('updatePrint', objQ[0][i].pid);
+            let obj = JSON.parse(queryjson);
+            //console.log(queryjson);
+            // 추후 obj 배열을 한번에 넘겨주는 방식으로 변경해야할 듯
+            list = list + template.list(objQ[0][i].pid, obj, objQ[0][i].uid);
+          }
+          else {
+            list = list + `<tr>
+            <td>${objQ[0][i].pid}</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>
+            </tr>`;
+          }
+        }
+      } catch (error) {
+        console.log(error);
+      }
+    }
+    else {
+      objQ = await connection.query("SELECT `pid`, `uid` FROM `plist` where `uid`=?", [user]);
+
+      console.log(user + "의 보유 복합기는");
+      try {
+        console.log(objQ);
+        for (let i = 0; i < objQ[0].length; i++) {
+          console.log(objQ[0][i].pid);
+          let queryjson = await queryB('updatePrint', objQ[0][i].pid);
+          let obj = JSON.parse(queryjson);
+          //console.log(queryjson);
+          // 추후 obj 배열을 한번에 넘겨주는 방식으로 변경해야할 듯
+          list = list + template.list(objQ[0][i].pid, obj, objQ[0][i].uid);
+          //
+        }
+      } catch (error) {
+        console.log(error);
+      }
+    } 
+  }
+  else {
+    console.log("로그인 필요 " + request.cookies.loginid);
+  }
+  connection.release();
+
+  // if (objQ != null && objQ !== undefined){  // 일반적으로 선언되지 않은 오브젝트 구별법 (=== undefined)
+  // }ㄹ
+
+  var html = template.HTML(user, admin, 'main', list);
+
+  response.send(html);
+});
+
+//
+// 서비스 조회
+//
+app.get('/service', async function(request, response) {
+  var list = ``;
+
+  if (request.cookies.loginid === undefined || request.cookies.admin == "false") {
+    response.send(`<script type="text/javascript">alert("잘못된 접근입니다."); window.location = '/';</script>`);
+  }else if (request.cookies.admin == "true") {
+    try {
+      let queryjson = await queryB('check');
+      let obj = JSON.parse(queryjson);
+      console.log(typeof(obj.num));
+      for (let i = parseInt(obj.num); i >= 1; i--) {
+        console.log(i);
+        let queryjson = await queryB('getService', i.toString());
+        let obj2 = JSON.parse(queryjson);
+        console.log(obj2);
+        list = list + template_service.list(request.cookies.loginid, obj2);
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  }
+  
+  let html = template_service.HTML('admin', 'main', list)
+
+  response.send(html);
+});
+
+
+//
+// 서비스 등록
+//
+app.get('/service/enroll', function(request, response) {
+  if (request.cookies.loginid === undefined || request.cookies.admin == "false") {
+    response.send(`<script type="text/javascript">alert("잘못된 접근입니다."); window.location = '/';</script>`);
+  }else {
+    var html = template_service.HTML(request.cookies.loginid, 'enroll', null);
+    response.send(html);
+  }
+});
+
+app.post('/service/enroll_process', async function(request, response) {
+  var pid = request.body.PID;
+  var sid = request.body.SID;
+  var num = request.body.NUM;
+
+  let queryjson = await queryB('checkPlus');
+  let obj = JSON.parse(queryjson);
+  
+  console.log(obj.num + "번 데이터 등록");
+  await queryB('putService', request.cookies.loginid, pid, sid.toString(), num.toString(), obj.num);
+  response.send(`<script type="text/javascript">alert("서비스 내역이 등록되었습니다."); window.location = '/';</script>`);
+  // console.log("enroll printer log : " + queryjson); // query 함수내에 이미 존재
+});
+
+//
+// 복합기 등록
+//
+app.get('/printer/enroll', function(request, response) {
+  if (request.cookies.loginid === undefined) {
+    response.send(`<script type="text/javascript">alert("잘못된 접근입니다."); window.location = '/service';</script>`);
+  }else {
+    var html = template.HTML(request.cookies.loginid, request.cookies.admin, 'enroll', null);
+    response.send(html);
+  }
+});
+
+app.post('/printer/enroll_process', async function(request, response) {
+  var id = request.body.ID;
+  var ip = request.body.IP;
+  let rows = null;
+
+  const connection = await pool.getConnection(async conn => conn);
+  console.log(request.cookies.admin);
+  console.log("복합기 등록 쿠키 : " + request.cookies.loginid);
+  rows = await connection.query("SELECT `pid` FROM `plist` WHERE `pid` = ?",[id])
+  console.log(rows[0]);
+  if (rows[0].length > 0) {
+    rows = await connection.query("UPDATE `plist` SET `pip` = ?, `uid` = ? WHERE `pid` = ?",[ip, request.cookies.loginid, id])
+    console.log("enroll printer : " + id + " IP : " +ip);
+    console.log("쿼리문 : " + rows[0]);
+    await queryB('enrollPrint', id, ip);
+
+    connection.release();
+    response.send(`<script type="text/javascript">alert("사용 복합기가 등록되었습니다."); window.location = '/';</script>`);
+  }  
+  else {
+    connection.release();
+    response.send(`<script type="text/javascript">alert("인증되지 않은 복합기입니다. ID를 확인해주세요"); window.location = '/printer/enroll';</script>`);
+  }
+  // console.log("enroll printer log : " + queryjson); // query 함수내에 이미 존재
+});
+
+app.post('/printer/enroll_process_a', async function(request, response) {
+  var id = request.body.ID;
+  let rows = null;
+
+  const connection = await pool.getConnection(async conn => conn);
+  console.log("관리자 복합기 등록 : " + request.cookies.loginid);
+  rows = await connection.query("INSERT INTO `plist` VALUE(?,?,?)",[id, null, null])
+  console.log("enroll printer : " + id);
+
+  response.send(`<script type="text/javascript">alert("복합기 ${id}가 등록되었습니다."); window.location = '/';</script>`);
+});
+
+//
+// 사용자 회원 가입
+//
+app.get('/sign_up', function(request, response) {
+  var html = template.HTML(null, false, 'signup',null);
+  response.send(html);
+});
+
+app.post('/sign_process', async function(request, response) {
+  let id = request.body.ID;
+  let pw = request.body.PW;
+  let rows = null;
+
+  console.log(request.body);
+  console.log(id);
+
+  const connection = await pool.getConnection(async conn => conn);
+  rows = await connection.query("INSERT INTO `user` VALUE(?,?,?)",[id,pw,0])
+  console.log("sign up user : "+rows);
+    
+  connection.release();
+
+  response.redirect('/')
+});
+
+//
+// 사용자 로그인
+//
+app.get('/login', function(request, response) {
+  var html = template.HTML(null, false, "login", null);
+  response.send(html);
+});
+
+app.post('/login_process', async function(request, response) {
+  let id = request.body.ID;
+  let pw = request.body.PW;
+  
+  console.log(request.body);
+  console.log(id);
+
+  const connection = await pool.getConnection(async conn => conn);
+
+  let [rows] = await connection.query("SELECT `pw`, `admin` FROM `user` where `id`=?", [id]);
+  console.log("mysql 로그 : " + rows[0]);
+  if (rows[0] === undefined) {
+    console.log("아이디 없음");
+    response.send(`<script type="text/javascript">alert("아이디 없음"); window.location = '/login';</script>`);
+  }
+  else if (rows[0].pw != pw) {
+    console.log(rows[0].pw+"!="+pw);
+    console.log("비밀번호 틀림");
+    response.send(`<script type="text/javascript">alert("비밀번호 틀림"); window.location = '/login';</script>`);
+  }
+  else {
+    if (rows[0].admin == 1) {
+      console.log("로그인 성공. 어드민 유무 : true");
+      response.cookie('loginid', id);
+      response.cookie('admin', true);
+      response.send(`<script type="text/javascript">alert("관리자 로그인 성공"); window.location = '/';</script>`);
+    }
+    else {
+      console.log("로그인 성공. 어드민 유무 : false");
+      response.cookie('loginid', id);
+      response.cookie('admin', false);
+      response.send(`<script type="text/javascript">alert("사용자 로그인 성공"); window.location = '/';</script>`);
+    }
+  }
+  connection.release(); // 커넥션 반환
+
+  //response.redirect('/');
+});
+
+//
+// 로그아웃
+//
+app.get('/logout_process', async function(request, response) {
+  response.clearCookie('loginid');
+  response.clearCookie('admin');
+  response.send(`<script type="text/javascript">alert("로그아웃"); window.location = '/';</script>`);
+});
+
+//
+// 앱 동작
+//
+app.listen(3000, function() {
+    console.log('Example app listening on port 3000!');
+})
+
